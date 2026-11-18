@@ -328,6 +328,12 @@
   .qChoice.crossed span:last-child { text-decoration: line-through; text-decoration-thickness: 3px; text-decoration-color: #8a2a22; }
   #qFeedback { font-size: 17px; font-weight: 900; min-height: 24px; margin-top: 10px; color: #5e4a2c; }
 
+  #storyLayer { position: absolute; inset: 0; z-index: 31; display: none; background: rgba(15,10,5,0.88);
+    flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; padding: 30px; }
+  #storyLayer.active { display: flex; }
+  #storyLayer h2 { font-family: var(--display); font-weight: 400; color: var(--gold); font-size: 44px; margin: 0; }
+  #storyLayer p { font-size: 20px; font-weight: 700; margin: 0; max-width: 640px; line-height: 1.5; color: var(--parch); }
+  #storyLayer button { font-size: 20px; padding: 10px 26px; }
   #pauseLayer {
     position: absolute; inset: 0; z-index: 30; display: none; background: rgba(15,10,5,0.9);
     flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center;
@@ -498,6 +504,12 @@
       </div>
     </div>
 
+    <div id="storyLayer">
+      <h2 id="storyTitle"></h2>
+      <p id="storyText"></p>
+      <div class="btns"><button id="btnStoryGo">Let's build!</button></div>
+    </div>
+
     <div id="pauseLayer">
       <h2>Paused</h2>
       <p>Your castle is waiting. Click Resume when you are back. Keep this tab open or your mission progress will be lost.</p>
@@ -577,7 +589,7 @@ var GAME = {
   selected: null
 };
 var GS = null;          // live mission state (null when not in a mission)
-var INDEX_VERSION = 'Build 7: Campaign saves, Missions 2-3';
+var INDEX_VERSION = 'Build 7.1: Drained land';
 
 function hasServer() {
   return typeof google !== 'undefined' && google.script && google.script.run;
@@ -768,9 +780,13 @@ var MISSIONS = {
        winTitle: 'Victory! The marsh is yours.',
        win: "Your motte-and-bailey stands on the hilltop, and Varrock's raiders lie broken in the reeds. The survivors have a place to regroup." },
   2: { n: 44, off: [0, 4], res: ['wood', 'food', 'stone'], cap: 45,
-       brief: 'King Halvard of the North is sending reinforcements. Varrock sends an army to crush you before help arrives. Your workers strike stone on the eastern hills. ' +
+       brief: 'A surviving engineer has drained the swamp, so most of the land is firm ground now. King Halvard of the North is sending reinforcements. Varrock sends an army to crush you before help arrives. Your workers strike stone on the eastern hills. ' +
               'Click the floating pick icons to quarry stone. Upgrade your keep, walls, and towers to stone (Walls tab: Upgrade) and hold out until Halvard arrives in the last wave.',
        start: 'Quarry stone on the eastern hills and upgrade your keep to stone. Hold out until King Halvard arrives.',
+       introTitle: 'Great news, {addr}!',
+       intro: 'One of your royal engineers survived the night Aldermoor fell. He found his way to your camp and has been digging drainage ditches day and night. ' +
+              'The swamp is drained, and you now have firm ground to build on. Only the southern edge is still marsh. ' +
+              'Your kingdom is already growing. Now raise it in stone before Varrock\'s army arrives.',
        winTitle: 'Victory! The North rides with you.',
        win: "King Halvard's cavalry smashed into Varrock's army at the foot of your stone keep. The north is your ally now." },
   3: { n: 52, off: [0, 0], res: ['wood', 'food', 'stone', 'iron', 'gold'], cap: 50,
@@ -1327,6 +1343,7 @@ function startOver() {
   GAME.selected = null;
   document.getElementById('qLayer').classList.remove('active');
   document.getElementById('pauseLayer').classList.remove('active');
+  document.getElementById('storyLayer').classList.remove('active');
   document.getElementById('toast').classList.remove('on');
   document.getElementById('banner').classList.remove('show');
   startup();
@@ -1442,17 +1459,29 @@ function buildCampaignMap(m) {
       else if (wet < 0.45) type = near ? 'reeds' : 'water';
       else if (wet < 0.55) type = 'reeds';
       else type = 'marsh';
+      // Mission 2 story: the engineer drained the swamp. Only the south edge stays marsh (about 18% of the map).
+      var swampRows = Math.round(N * 0.18), swampy = y >= N - swampRows, dry = false;
+      if (swampy) {
+        if (type === 'marsh' && waterNoise(X, Y) < 0.62) type = 'reeds';
+      } else if (type !== 'hill') { type = 'marsh'; dry = true; }
+      // keep a pond at the fishing spot and reeds at the reed bed so those food spots still make sense
+      spots.forEach(function (s) {
+        var ds = Math.hypot(s.x - x, s.y - y);
+        if (s.icon === 'fish' && ds <= 2.6 && type !== 'hill') { type = ds <= 1.6 ? 'water' : 'reeds'; dry = false; }
+        if (s.icon === 'wheat' && ds <= 1.7 && type !== 'hill') { type = 'reeds'; dry = false; }
+      });
       var road = m >= 3 && onRoad(X, Y);
       if (road && (type === 'water' || type === 'reeds')) type = 'marsh';
       var obj = null, r1 = hash2(X + 101, Y + 202), r2 = hash2(X + 303, Y + 404);
       var rocky = spots.some(function (s) { return (s.k === 'stone' || s.k === 'iron' || s.k === 'gold') && Math.abs(s.x - x) <= 3 && Math.abs(s.y - y) <= 3; });
       if (road) obj = null;
       else if (rocky && type === 'hill' && r1 > 0.62) obj = { kind: 'rock', v: r2 };
-      else if (type === 'marsh' && forestNoise(X, Y) > 0.52 && r1 > 0.3) obj = { kind: 'tree', v: r2 };
+      else if (type === 'marsh' && !dry && forestNoise(X, Y) > 0.52 && r1 > 0.3) obj = { kind: 'tree', v: r2 };
+      else if (dry && forestNoise(X, Y) > 0.62 && r1 > 0.45) obj = { kind: 'tree', v: r2 };
       else if (type === 'hill' && height === 1 && forestNoise(X, Y) > 0.62 && r1 > 0.5) obj = { kind: 'tree', v: r2 };
       else if (type === 'marsh' && r1 < 0.02) obj = { kind: 'bush', v: r2 };
       if (height === 2 && obj && obj.kind === 'tree') obj = null;
-      tiles.push({ x: x, y: y, type: type, h: height, obj: obj, shade: r2, road: road });
+      tiles.push({ x: x, y: y, type: type, h: height, obj: obj, shade: r2, road: road, dry: dry });
     }
   }
   // the marked spots themselves stay clear
@@ -3890,7 +3919,7 @@ var HGT = new Float32Array(N * N);
 function tileBaseH(t) {
   if (t.type === 'water') return LV.water;
   if (t.type === 'reeds') return LV.reeds;
-  if (t.type === 'marsh') return LV.marsh;
+  if (t.type === 'marsh') return t.dry ? 0.7 : LV.marsh;
   return t.h === 2 ? LV.hill2 : LV.hill1;
 }
 function buildHeights() {
@@ -4072,7 +4101,7 @@ function buildStaticWorld() {
   var sr = mulberry32(555);
   var COL = {
     bed: [0.62, 0.55, 0.38], reeds: [0.55, 0.62, 0.32], marsh: [0.42, 0.6, 0.29], mud: [0.45, 0.4, 0.26],
-    hill1: [0.55, 0.76, 0.38], hill2: [0.62, 0.8, 0.42], rock: [0.6, 0.57, 0.5], camp: [0.7, 0.62, 0.44], road: [0.66, 0.53, 0.36]
+    hill1: [0.55, 0.76, 0.38], hill2: [0.62, 0.8, 0.42], rock: [0.6, 0.57, 0.5], camp: [0.7, 0.62, 0.44], road: [0.66, 0.53, 0.36], meadow: [0.44, 0.63, 0.31]
   };
   function mix(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
   function colAt(x, y) {
@@ -4084,6 +4113,7 @@ function buildStaticWorld() {
     else if (t.type === 'water') c = mix(COL.reeds, COL.mud, 0.4);
     else c = t.h === 2 ? COL.hill2 : COL.hill1;
     if (t.obj && t.obj.kind === 'tent') c = mix(c, COL.camp, 0.5);
+    if (t.dry && t.type === 'marsh') c = mix(COL.meadow, n > 0.75 ? COL.mud : COL.hill1, n > 0.75 ? 0.25 : n * 0.35);
     if (t.road) c = mix(c, COL.road, 0.8);
     var sl = Math.abs(hAt(x + 0.3, y) - hAt(x - 0.3, y)) + Math.abs(hAt(x, y + 0.3) - hAt(x, y - 0.3));
     c = mix(c, COL.rock, vclamp((sl - 0.9) / 1.4, 0, 0.6));
@@ -5430,6 +5460,7 @@ function drawMiniBase() {
     if (t.obj && t.obj.kind === 'bush') col = '#4f8a2a';
     if (t.obj && t.obj.kind === 'tent') col = '#e8d8b0';
     if (t.obj && t.obj.kind === 'rock') col = '#9a968e';
+    if (t.dry && t.type === 'marsh') col = '#88b558';
     if (t.road) col = '#b08a5a';
     c.fillStyle = col; c.fillRect(t.x * MINI_PX, t.y * MINI_PX, MINI_PX, MINI_PX);
   });
@@ -5661,6 +5692,7 @@ function describeTile(p) {
   if (t.type === 'water') text = 'Deep water: cannot build. Enemies cannot wade through it, but boats can land on the shore';
   else if (t.type === 'reeds') text = 'Reed bog: slow ground, cannot build';
   else if (t.road) text = "Varrock's supply road: enemies march fast here, can build";
+  else if (t.dry) text = 'Drained land: firm ground, can build';
   else if (t.type === 'marsh') text = 'Marsh: soft ground, can build';
   else if (t.h === 2) text = 'Hilltop: best spot for your keep';
   else text = 'Dry hill: good building ground';
@@ -6022,7 +6054,7 @@ function showBanner(text, secs) {
 }
 
 function togglePause() {
-  if (!GS || GS.phase === 'over') return;
+  if (!GS || GS.phase === 'over' || GS.story) return;
   GS.paused = !GS.paused;
   document.getElementById('btnPause').textContent = GS.paused ? 'Resume' : 'Pause';
   document.getElementById('pauseLayer').classList.toggle('active', GS.paused);
@@ -6304,6 +6336,33 @@ function castleSnapshot() {
   return { m: GS.mission, diff: GS.diff, score: Math.round(score), b: b, t: t, when: Date.now() };
 }
 
+var ADDRESS = { king: 'Sire', queen: 'Your Majesty', lord: 'My Lord', lady: 'My Lady' };
+// Story card at the start of a mission (pauses the game until the student clicks Let's build!)
+function showStory(m, after) {
+  var MI = MISSIONS[m];
+  if (!MI.intro) { after(); return; }
+  var addr = ADDRESS[GS.who.title] || 'Sire';
+  document.getElementById('storyTitle').textContent = MI.introTitle.replace('{addr}', addr);
+  document.getElementById('storyText').textContent = MI.intro;
+  document.getElementById('storyLayer').classList.add('active');
+  GS.paused = true; GS.story = true;
+  if (GS.accom.readAloud) speakText(MI.introTitle.replace('{addr}', addr) + ' ' + MI.intro);
+  document.getElementById('btnStoryGo').onclick = function () {
+    stopSpeech();
+    document.getElementById('storyLayer').classList.remove('active');
+    if (GS) { GS.paused = false; GS.story = false; }
+    after();
+  };
+}
+function speakText(text) {
+  if (!SPEECH.ok) return;
+  stopSpeech();
+  var u = new SpeechSynthesisUtterance(text);
+  if (SPEECH.voice) u.voice = SPEECH.voice;
+  u.rate = 0.9; u.pitch = 0.8;
+  try { window.speechSynthesis.speak(u); } catch (e) {}
+}
+
 function startMission(num, diffKey) {
   if (!MISSIONS[num]) return;
   if (!QUESTIONS.list.length) return;
@@ -6351,8 +6410,11 @@ function startMission(num, diffKey) {
   tip.textContent = num === 1 ? 'Click a floating axe or food icon to answer a question and earn that resource' :
     (num === 2 ? 'New: click the floating pick icons on the eastern hills to quarry stone' : 'New: click the ingot and coin icons at the mine (northeast) for iron and gold');
   tip.classList.remove('hide');
-  showBanner(MISSIONS[num].start + ' Wave 1 comes from ' + waveSidesText(currentWave()) + '.', 6);
-  if (num > 1) setTimeout(function () { if (GS && GS.mission === num && GS.time < 12) toast('You start with your ' + GS.carried + '. Resources start fresh.'); }, 6500);
+  document.getElementById('storyLayer').classList.remove('active');
+  showStory(num, function () {
+    showBanner(MISSIONS[num].start + ' Wave 1 comes from ' + waveSidesText(currentWave()) + '.', 6);
+    if (num > 1) setTimeout(function () { if (GS && GS.mission === num && GS.time < 12) toast('You start with your ' + GS.carried + '. Resources start fresh.'); }, 6500);
+  });
 }
 
 /* =========================================================
