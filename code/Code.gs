@@ -9,6 +9,7 @@
  * - Sends the game the questions from a mission's question tab
  * - Writes every answer to the Results tab
  * - Teacher menu "Castle Game > Update reports" rebuilds Summary and Progress Report
+ * - Build 7: Saves tab (castle carry-over between missions) and "New campaign" menu item
  */
 
 // Art is stored in the public GitHub repo. The game tries the first address,
@@ -18,7 +19,7 @@ var ART_BASE_URLS = [
   'https://raw.githubusercontent.com/jimmaoscott-lang/castlebuildermapsanditems/main/'
 ];
 
-var GAME_VERSION = 'Build 6: GitHub loader';
+var GAME_VERSION = 'Build 7: Campaign saves';
 
 // The game page (Index.html) loads straight from GitHub, so new builds need no pasting.
 //   Student link:            .../exec          -> the "live" branch
@@ -86,6 +87,8 @@ function onOpen() {
     .addItem('Update reports', 'updateReports')
     .addItem('Make backup codes', 'makeBackupCodes')
     .addItem('Check game version', 'checkGameVersion')
+    .addSeparator()
+    .addItem('New campaign (archive saves and results)', 'newCampaign')
     .addToUi();
 }
 
@@ -96,6 +99,7 @@ function getStartupData() {
     email: email,
     student: readStudent_(email),
     missions: readMissions_(),
+    save: readSave_(email),
     artBases: ART_BASE_URLS,
     version: GAME_VERSION
   };
@@ -308,6 +312,94 @@ function randomCode_() {
   var s = '';
   for (var i = 0; i < 6; i++) s += CODE_LETTERS.charAt(Math.floor(Math.random() * CODE_LETTERS.length));
   return s;
+}
+
+
+/* =========================================================
+   CAMPAIGN SAVES (Build 7)
+   Saves: Student email | Last mission played | Missions completed | Castle save data | Last saved
+   Castle save data is JSON: { castles: { "1": {...}, "2": {...}, "3": {...} } }
+   Each castle holds buildings and surviving troops. A mission win replaces that
+   mission's castle only if the new castle is at least as strong (replays can only improve it).
+   ========================================================= */
+var SAVES_HEADERS = ['Student email', 'Last mission played', 'Missions completed', 'Castle save data', 'Last saved'];
+
+function findSaveRow_(sheet, email) {
+  var last = sheet.getLastRow();
+  if (last < 2) return -1;
+  var emails = sheet.getRange(2, 1, last - 1, 1).getValues();
+  for (var i = 0; i < emails.length; i++) {
+    if (String(emails[i][0] || '').trim().toLowerCase() === email) return i + 2;
+  }
+  return -1;
+}
+
+function readSave_(email) {
+  email = String(email || '').trim().toLowerCase();
+  var empty = { completed: [], castles: {} };
+  if (!email) return empty;
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Saves');
+  if (!sheet) return empty;
+  var row = findSaveRow_(sheet, email);
+  if (row < 0) return empty;
+  var r = sheet.getRange(row, 1, 1, 5).getValues()[0];
+  var data = {};
+  try { data = JSON.parse(String(r[3] || '{}')) || {}; } catch (err) { data = {}; }
+  var done = String(r[2] || '').split(',').map(function (x) { return Number(String(x).trim()); })
+    .filter(function (n) { return n >= 1 && n <= 4; });
+  return { completed: done, castles: data.castles || {}, last: Number(r[1]) || 0 };
+}
+
+/** Game calls this when a mission ends. castle is null after a defeat. */
+function saveCampaign(mission, won, castle, email) {
+  var who = currentEmail_() || String(email || '');
+  who = who.trim().toLowerCase();
+  if (!who) return { ok: false, error: 'No school email, so progress was not saved.' };
+  mission = Number(mission);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  try {
+    var sheet = getOrMakeSheet_('Saves', SAVES_HEADERS);
+    var save = readSave_(who);
+    var kept = false;
+    if (won && castle) {
+      var old = save.castles[String(mission)];
+      if (!old || Number(castle.score || 0) >= Number(old.score || 0)) {
+        save.castles[String(mission)] = castle;
+        kept = true;
+      }
+      if (save.completed.indexOf(mission) < 0) save.completed.push(mission);
+      save.completed.sort();
+    }
+    var row = findSaveRow_(sheet, who);
+    if (row < 0) row = sheet.getLastRow() + 1;
+    sheet.getRange(row, 1, 1, 5).setValues([[who, mission, save.completed.join(', '),
+      JSON.stringify({ castles: save.castles }), new Date()]]);
+    SpreadsheetApp.flush();
+    return { ok: true, kept: kept, save: { completed: save.completed, castles: save.castles, last: mission } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Teacher menu: Castle Game > New campaign. Archives Saves and Results, then starts everyone at Mission 1. */
+function newCampaign() {
+  var ui = SpreadsheetApp.getUi();
+  var ok = ui.alert('New campaign',
+    'This copies the Saves and Results tabs into archive tabs, then empties them so every student starts again at Mission 1. Continue?',
+    ui.ButtonSet.YES_NO);
+  if (ok !== ui.Button.YES) return;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var stamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HHmm');
+  var moved = [];
+  [['Saves', SAVES_HEADERS], ['Results', RESULTS_HEADERS]].forEach(function (t) {
+    var sheet = ss.getSheetByName(t[0]);
+    if (!sheet || sheet.getLastRow() < 2) return;
+    sheet.copyTo(ss).setName(t[0] + ' archive ' + stamp);
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, Math.max(t[1].length, sheet.getLastColumn())).clearContent();
+    moved.push(t[0]);
+  });
+  toast_(moved.length ? 'New campaign started. Archived: ' + moved.join(' and ') + ' (' + stamp + ').' : 'Nothing to archive. The campaign is already fresh.');
 }
 
 /* =========================================================
