@@ -1,6 +1,6 @@
 /**
  * THE EXILED CROWN - Castle Builder Review Game
- * Code.gs  |  Build 5: 3D rebuild (server code unchanged from Build 4 except this version label)
+ * Code.gs  |  Build 6: loads the game page from GitHub (live branch for students, ?test=1 for main)
  *
  * - Serves the game page and its startup data (student, Missions tab, art)
  * - Reads the Roster tab: accommodations unlock Sage, Ranger, or Champion
@@ -18,7 +18,15 @@ var ART_BASE_URLS = [
   'https://raw.githubusercontent.com/jimmaoscott-lang/castlebuildermapsanditems/main/'
 ];
 
-var GAME_VERSION = 'Build 5: 3D rebuild';
+var GAME_VERSION = 'Build 6: GitHub loader';
+
+// The game page (Index.html) loads straight from GitHub, so new builds need no pasting.
+//   Student link:            .../exec          -> the "live" branch
+//   Teacher test link:       .../exec?test=1   -> the "main" branch (newest build, not live yet)
+// If GitHub cannot be reached, the copy of Index saved in this Apps Script project is used.
+var GITHUB_RAW = 'https://raw.githubusercontent.com/jimmaoscott-lang/castlebuildermapsanditems/';
+var LIVE_BRANCH = 'live';
+var TEST_BRANCH = 'main';
 
 var RESULTS_HEADERS = ['Time', 'Student email', 'Class period', 'Mission', 'Question tab', 'Difficulty',
   'Character', 'Background', 'Question', 'TEKS', 'Right/Wrong', 'Accommodations active', 'Guess flag', 'Event tag'];
@@ -39,9 +47,37 @@ var CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // no I, O, 0, 1 (easy 
    WEB APP
    ========================================================= */
 function doGet(e) {
-  return HtmlService.createHtmlOutputFromFile('Index')
+  var test = !!(e && e.parameter && String(e.parameter.test) === '1');
+  var html = fetchGameHtml_(test ? TEST_BRANCH : LIVE_BRANCH);
+  var out = html ? HtmlService.createHtmlOutput(html) : HtmlService.createHtmlOutputFromFile('Index');
+  return out
     .setTitle('The Exiled Crown')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/** Downloads code/Index.html from a GitHub branch. Returns '' if anything goes wrong. */
+function fetchGameHtml_(branch) {
+  try {
+    var res = UrlFetchApp.fetch(GITHUB_RAW + branch + '/code/Index.html', { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return '';
+    var text = res.getContentText('UTF-8');
+    return text.indexOf('The Exiled Crown') >= 0 && text.indexOf('</html>') > 0 ? text : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+/** Which build each link is running (menu: Castle Game > Check game version). Run once in the editor to allow GitHub access. */
+function checkGameVersion() {
+  function ver(branch) {
+    var t = fetchGameHtml_(branch);
+    var m = t.match(/INDEX_VERSION = '([^']+)'/);
+    return t ? (m ? m[1] : 'found, version unknown') : 'could not reach GitHub';
+  }
+  var msg = 'Student link (live): ' + ver(LIVE_BRANCH) + '  |  Test link (?test=1): ' + ver(TEST_BRANCH);
+  Logger.log(msg);
+  toast_(msg);
+  return msg;
 }
 
 function onOpen() {
@@ -49,6 +85,7 @@ function onOpen() {
     .createMenu('Castle Game')
     .addItem('Update reports', 'updateReports')
     .addItem('Make backup codes', 'makeBackupCodes')
+    .addItem('Check game version', 'checkGameVersion')
     .addToUi();
 }
 
